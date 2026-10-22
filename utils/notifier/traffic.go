@@ -10,6 +10,7 @@ import (
 	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/database/models"
+	messageevent "github.com/komari-monitor/komari/database/models/messageEvent"
 	"github.com/komari-monitor/komari/utils/messageSender"
 	"github.com/komari-monitor/komari/ws"
 	cache "github.com/patrickmn/go-cache"
@@ -92,18 +93,55 @@ func CheckTraffic() {
 
 		if curStep > lastStep { // 只在进入新步进时提醒一次
 			trafficCache.SetDefault(key, curStep)
-		
-			msg := fmt.Sprintf("used %d%% (%s / %s), type=%s", curStep, humanBytes(used), humanBytes(c.TrafficLimit), strings.ToLower(c.TrafficLimitType))
+
+			remaining := c.TrafficLimit - used
+			if remaining < 0 {
+				remaining = 0
+			}
 			// 发送通知（内部会检查 NotificationEnabled）
 			_ = messageSender.SendEvent(models.EventMessage{
-				Event:   "Traffic",
+				Event:   messageevent.Traffic,
 				Clients: []models.Client{c},
 				Time:    time.Now(),
-				Emoji:   "⚠️",
-				Message: msg,
+				Emoji:   "📡",
+				Details: []models.EventMessageField{
+					{Label: "当前用量", Value: fmt.Sprintf("%s（%.1f%%）", humanBytes(used), pct)},
+					{Label: "流量额度", Value: humanBytes(c.TrafficLimit)},
+					{Label: "剩余额度", Value: humanBytes(remaining)},
+					{Label: "统计方式", Value: trafficTypeDisplayName(c.TrafficLimitType)},
+					{Label: "提醒阈值", Value: fmt.Sprintf("%.1f%%（本次跨过 %d%% 档位）", startThreshold, curStep)},
+				},
+				Message: trafficAdvice(pct),
 			})
 		}
 	}
+}
+
+func trafficTypeDisplayName(trafficType string) string {
+	switch strings.ToLower(strings.TrimSpace(trafficType)) {
+	case "up":
+		return "仅上行"
+	case "down":
+		return "仅下行"
+	case "sum":
+		return "上行 + 下行"
+	case "min":
+		return "上行/下行取较小值"
+	case "max":
+		return "上行/下行取较大值"
+	default:
+		return "上行/下行取较大值"
+	}
+}
+
+func trafficAdvice(percentage float64) string {
+	if percentage >= 100 {
+		return "流量额度已用尽，请尽快扩容或重置流量，避免服务被限速或中断。"
+	}
+	if percentage >= 90 {
+		return "流量额度即将用尽，请关注近期流量增长并提前安排扩容。"
+	}
+	return "流量用量已达到提醒阈值，请关注后续增长趋势。"
 }
 
 func computeUsedByType(t string, up, down int64) int64 {

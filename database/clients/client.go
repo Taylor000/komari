@@ -205,39 +205,25 @@ func EditClientToken(clientUUID, token string) error {
 
 // CreateClient 创建新客户端
 func CreateClient() (clientUUID, token string, err error) {
-	db := dbcore.GetDBInstance()
-	token = utils.GenerateToken()
-	clientUUID = uuid.New().String()
-
-	client := models.Client{
-		UUID:      clientUUID,
-		Token:     token,
-		Name:      "client_" + clientUUID[0:8],
-		CreatedAt: models.FromTime(time.Now()),
-		UpdatedAt: models.FromTime(time.Now()),
-	}
-
-	err = db.Create(&client).Error
-	if err != nil {
-		return "", "", err
-	}
-	if err := tasks.AddDefaultOnClientUUID(clientUUID); err != nil {
-		log.Println("Failed to apply default-on ping tasks to new client:", err)
-	}
-	return clientUUID, token, nil
+	return CreateClientWithNameAndGroup("", "")
 }
 
 func CreateClientWithName(name string) (clientUUID, token string, err error) {
-	if name == "" {
-		return CreateClient()
-	}
+	return CreateClientWithNameAndGroup(name, "")
+}
+
+func CreateClientWithNameAndGroup(name, group string) (clientUUID, token string, err error) {
 	db := dbcore.GetDBInstance()
 	token = utils.GenerateToken()
 	clientUUID = uuid.New().String()
+	if name == "" {
+		name = "client_" + clientUUID[0:8]
+	}
 	client := models.Client{
 		UUID:      clientUUID,
 		Token:     token,
 		Name:      name,
+		Group:     group,
 		CreatedAt: models.FromTime(time.Now()),
 		UpdatedAt: models.FromTime(time.Now()),
 	}
@@ -298,9 +284,25 @@ func GetClientTokenByUUID(uuid string) (token string, err error) {
 
 func GetAllClientBasicInfo() (clients []models.Client, err error) {
 	db := dbcore.GetDBInstance()
-	err = db.Find(&clients).Error
-	if err != nil {
+	if err = db.Order("weight ASC, created_at ASC, uuid ASC").Find(&clients).Error; err != nil {
 		return nil, err
+	}
+
+	var groups []models.ServerGroup
+	if err = db.Select("id", "name", "weight").Order("weight ASC, id ASC").Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	groupOrder := make(map[string]int, len(groups))
+	for index, group := range groups {
+		groupOrder[group.Name] = index
+	}
+	for index := range clients {
+		order, exists := groupOrder[clients[index].Group]
+		if !exists {
+			continue
+		}
+		clients[index].GroupOrder = new(int)
+		*clients[index].GroupOrder = order
 	}
 	return clients, nil
 }

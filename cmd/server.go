@@ -28,10 +28,12 @@ import (
 	"github.com/komari-monitor/komari/database"
 	"github.com/komari-monitor/komari/database/accounts"
 	"github.com/komari-monitor/komari/database/auditlog"
+	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/database/dbcore"
 	"github.com/komari-monitor/komari/database/models"
 	d_notification "github.com/komari-monitor/komari/database/notification"
 	"github.com/komari-monitor/komari/database/records"
+	"github.com/komari-monitor/komari/database/subscriptions"
 	"github.com/komari-monitor/komari/database/tasks"
 	"github.com/komari-monitor/komari/public"
 	"github.com/komari-monitor/komari/utils"
@@ -70,6 +72,12 @@ func RunServer() {
 		log.Fatalf("Failed to create theme directory: %v", err)
 	}
 	InitDatabase()
+	if err := subscriptions.AutoRenewDue(); err != nil {
+		log.Printf("Failed to auto-renew subscriptions: %v", err)
+	}
+	if err := clients.SyncLegacyServerGroups(); err != nil {
+		log.Printf("Failed to migrate legacy server groups: %v", err)
+	}
 	if utils.VersionHash != "unknown" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -184,6 +192,7 @@ func RunServer() {
 	r.GET("/api/me", public_api.GetMe)
 	r.GET("/api/clients", api.GetClients)
 	r.GET("/api/nodes", public_api.GetNodesInformation)
+	r.GET("/api/subscriptions", public_api.GetSubscriptions)
 	r.GET("/api/public", public_api.GetPublicSettings)
 	r.GET("/api/oauth", public_api.OAuth)
 	r.GET("/api/oauth_callback", public_api.OAuthCallback)
@@ -205,7 +214,6 @@ func RunServer() {
 		tokenAuthrized.POST("/uploadBasicInfo", client.UploadBasicInfo)
 		tokenAuthrized.POST("/report", client.UploadReport)
 		tokenAuthrized.GET("/terminal", terminal.EstablishConnection)
-		tokenAuthrized.POST("/task/result", client.TaskResult)
 		tokenAuthrized.GET("/ping/tasks", client.GetPingTasks)
 		tokenAuthrized.POST("/ping/result", client.UploadPingResult)
 	}
@@ -227,16 +235,6 @@ func RunServer() {
 			updateGroup.POST("/user", update.UpdateUser)
 			updateGroup.PUT("/favicon", update.UploadFavicon)
 			updateGroup.POST("/favicon", update.DeleteFavicon)
-		}
-		// tasks
-		taskGroup := adminAuthrized.Group("/task")
-		{
-			taskGroup.GET("/all", admin.GetTasks)
-			taskGroup.POST("/exec", admin.Exec)
-			taskGroup.GET("/:task_id", admin.GetTaskById)
-			taskGroup.GET("/:task_id/result", admin.GetTaskResultsByTaskId)
-			taskGroup.GET("/:task_id/result/:uuid", admin.GetSpecificTaskResult)
-			taskGroup.GET("/client/:uuid", admin.GetTasksByClientId)
 		}
 		// settings
 		settingsGroup := adminAuthrized.Group("/settings")
@@ -268,6 +266,11 @@ func RunServer() {
 		{
 			clientGroup.POST("/add", admin.AddClient)
 			clientGroup.GET("/list", admin.ListClients)
+			clientGroup.GET("/group/list", admin.ListServerGroups)
+			clientGroup.POST("/group/add", admin.AddServerGroup)
+			clientGroup.POST("/group/order", admin.OrderServerGroups)
+			clientGroup.POST("/group/:id/edit", admin.EditServerGroup)
+			clientGroup.POST("/group/:id/remove", admin.RemoveServerGroup)
 			clientGroup.GET("/:uuid", admin.GetClient)
 			clientGroup.POST("/:uuid/edit", admin.EditClient)
 			clientGroup.POST("/:uuid/remove", admin.RemoveClient)
@@ -302,6 +305,14 @@ func RunServer() {
 			two_factorGroup.POST("/disable", admin.Disable2FA)
 		}
 		adminAuthrized.GET("/logs", log_api.GetLogs)
+
+		subscriptionGroup := adminAuthrized.Group("/subscriptions")
+		{
+			subscriptionGroup.GET("", admin.ListSubscriptions)
+			subscriptionGroup.POST("", admin.AddSubscription)
+			subscriptionGroup.POST("/:id/edit", admin.EditSubscription)
+			subscriptionGroup.POST("/:id/remove", admin.RemoveSubscription)
+		}
 
 		// clipboard
 		clipboardGroup := adminAuthrized.Group("/clipboard")
@@ -410,11 +421,13 @@ func DoScheduledWork() {
 		case <-ticker.C:
 			records.DeleteRecordBefore(time.Now().Add(-time.Hour * time.Duration(cfg.RecordPreserveTime)))
 			records.CompactRecord()
-			tasks.ClearTaskResultsByTimeBefore(time.Now().Add(-time.Hour * time.Duration(cfg.RecordPreserveTime)))
 			tasks.DeletePingRecordsBefore(time.Now().Add(-time.Hour * time.Duration(cfg.PingRecordPreserveTime)))
 			auditlog.RemoveOldLogs()
 			accounts.RemoveExpiredSessions()
 		case <-minute.C:
+			if err := subscriptions.AutoRenewDue(); err != nil {
+				log.Printf("Failed to auto-renew subscriptions: %v", err)
+			}
 			api.SaveClientReportToDB()
 			if !cfg.RecordEnabled {
 				records.DeleteAll()

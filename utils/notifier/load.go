@@ -1,8 +1,10 @@
 package notifier
 
 import (
+	"fmt"
 	"log"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,13 @@ var LoadNotificationManager = &LoadNotificationService{
 	tickers:  make(map[int]*time.Ticker),
 	tasks:    make(map[int][]models.LoadNotification),
 	stopChan: make(chan struct{}),
+}
+
+type metricSnapshot struct {
+	Latest        float32
+	Average       float32
+	Peak          float32
+	ExceededRatio float32
 }
 
 // Reload 重载时间表
@@ -79,6 +88,7 @@ func executeLoadNotificationTask(task models.LoadNotification) {
 	now := time.Now()
 	windowStart := now.Add(-time.Duration(task.Interval) * time.Minute)
 	overloadClients := make([]string, 0)
+	snapshots := make(map[string]metricSnapshot)
 	for _, clientUUID := range task.Clients {
 		// 获取客户端在时间窗口内的记录
 		records, err := getRecordsForClient(clientUUID, windowStart, now)
@@ -87,12 +97,14 @@ func executeLoadNotificationTask(task models.LoadNotification) {
 		}
 
 		// 检查指标是否达到阈值
-		if checkMetricThreshold(records, task) {
+		triggered, snapshot := evaluateMetricThreshold(records, task)
+		if triggered {
 			overloadClients = append(overloadClients, clientUUID)
+			snapshots[clientUUID] = snapshot
 		}
 
 	}
-	sendLoadNotification(overloadClients, task)
+	sendLoadNotification(overloadClients, snapshots, task)
 	updateLastNotified(task.Id, now)
 }
 
@@ -114,10 +126,9 @@ func getRecordsForClient(clientUUID string, start, end time.Time) ([]models.Reco
 	return records.GetRecordsByClientAndTime(clientUUID, start, end)
 }
 
-// checkMetricThreshold 检查指标是否达到阈值
-func checkMetricThreshold(records []models.Record, task models.LoadNotification) bool {
+func evaluateMetricThreshold(records []models.Record, task models.LoadNotification) (bool, metricSnapshot) {
 	if len(records) == 0 {
-		return false
+		return false, metricSnapshot{}
 	}
 
 	// 计算需要达标的最小记录数
@@ -127,15 +138,34 @@ func checkMetricThreshold(records []models.Record, task models.LoadNotification)
 	}
 
 	exceededCount := 0
+	var total float32
+	var peak float32
+	var latest float32
+	var latestTime time.Time
 
 	for _, record := range records {
 		metricValue := getMetricValue(record, task.Metric)
+		total += metricValue
+		if metricValue > peak {
+			peak = metricValue
+		}
+		recordTime := record.Time.ToTime()
+		if latestTime.IsZero() || recordTime.After(latestTime) {
+			latest = metricValue
+			latestTime = recordTime
+		}
 		if metricValue >= task.Threshold {
 			exceededCount++
 		}
 	}
 
-	return exceededCount >= minRequiredRecords
+	snapshot := metricSnapshot{
+		Latest:        latest,
+		Average:       total / float32(len(records)),
+		Peak:          peak,
+		ExceededRatio: float32(exceededCount) / float32(len(records)),
+	}
+	return exceededCount >= minRequiredRecords, snapshot
 }
 
 // getMetricValue 根据指标名称获取记录中的对应值
@@ -211,12 +241,22 @@ func bytesPerSecondToMbps(bytesPerSecond int64) float32 {
 }
 
 // sendLoadNotification 发送负载通知
-func sendLoadNotification(clientUUIDs []string, task models.LoadNotification) {
+func sendLoadNotification(clientUUIDs []string, snapshots map[string]metricSnapshot, task models.LoadNotification) {
 	ex_clients := []models.Client{}
+	var diagnostics strings.Builder
 	for _, clientUUID := range clientUUIDs {
 		cl, err := clients.GetClientByUUID(clientUUID)
 		if err == nil {
 			ex_clients = append(ex_clients, cl)
+			if snapshot, ok := snapshots[clientUUID]; ok {
+				fmt.Fprintf(&diagnostics, "• %s：最新 %s｜平均 %s｜峰值 %s｜超限 %.0f%%\n",
+					cl.Name,
+					formatMetricValue(task.Metric, snapshot.Latest),
+					formatMetricValue(task.Metric, snapshot.Average),
+					formatMetricValue(task.Metric, snapshot.Peak),
+					snapshot.ExceededRatio*100,
+				)
+			}
 		}
 	}
 	if len(ex_clients) == 0 {
@@ -228,9 +268,54 @@ func sendLoadNotification(clientUUIDs []string, task models.LoadNotification) {
 			Clients: ex_clients,
 			Time:    time.Now(),
 			Emoji:   "⚠️",
-			Message: task.Name,
+			Details: []models.EventMessageField{
+				{Label: "告警规则", Value: task.Name},
+				{Label: "监控指标", Value: metricDisplayName(task.Metric)},
+				{Label: "触发条件", Value: fmt.Sprintf("指标 ≥ %s，且窗口内超限占比 ≥ %.0f%%", formatMetricValue(task.Metric, task.Threshold), task.Ratio*100)},
+				{Label: "检测窗口", Value: fmt.Sprintf("最近 %d 分钟", task.Interval)},
+				{Label: "触发数量", Value: fmt.Sprintf("%d 台服务器", len(ex_clients))},
+			},
+			Message: strings.TrimSpace(diagnostics.String()),
 		})
 	}()
+}
+
+func metricDisplayName(metric string) string {
+	switch strings.ToLower(metric) {
+	case "cpu":
+		return "CPU 使用率"
+	case "gpu":
+		return "GPU 使用率"
+	case "ram":
+		return "内存使用率"
+	case "swap":
+		return "Swap 使用率"
+	case "disk":
+		return "磁盘使用率"
+	case "net_in", "netin":
+		return "入站带宽"
+	case "net_out", "netout":
+		return "出站带宽"
+	case "load":
+		return "系统负载"
+	case "temp":
+		return "温度"
+	default:
+		return metric
+	}
+}
+
+func formatMetricValue(metric string, value float32) string {
+	switch strings.ToLower(metric) {
+	case "cpu", "gpu", "ram", "swap", "disk":
+		return fmt.Sprintf("%.1f%%", value)
+	case "net_in", "netin", "net_out", "netout":
+		return fmt.Sprintf("%.2f Mbps", value)
+	case "temp":
+		return fmt.Sprintf("%.1f°C", value)
+	default:
+		return fmt.Sprintf("%.2f", value)
+	}
 }
 
 // updateLastNotified 更新最后通知时间

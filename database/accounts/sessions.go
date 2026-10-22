@@ -2,7 +2,6 @@ package accounts
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"time"
 
@@ -49,10 +48,16 @@ func CreateSession(uuid string, expires int, userAgent, ip, login_method string)
 				loc = ipinfo.Name
 			}
 			messageSender.SendEvent(models.EventMessage{
-				Event:   messageevent.Login,
-				Time:    time.Now(),
-				Message: fmt.Sprintf("%s: %s (%s)\n%s", login_method, ip, loc, userAgent),
-				Emoji:   "🔑",
+				Event: messageevent.Login,
+				Time:  time.Now(),
+				Emoji: "🔑",
+				Details: []models.EventMessageField{
+					{Label: "登录方式", Value: login_method},
+					{Label: "来源 IP", Value: ip},
+					{Label: "来源位置", Value: loc},
+					{Label: "设备信息", Value: userAgent},
+				},
+				Message: "检测到新的管理后台登录。如非本人操作，请立即检查账户安全并撤销会话。",
 			})
 		}
 	}()

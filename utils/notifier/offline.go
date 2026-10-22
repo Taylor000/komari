@@ -18,11 +18,12 @@ import (
 // notificationState 保存单个客户端的通知状态。
 // 通过在结构体中嵌入互斥锁，实现每个客户端细粒度的锁定，比全局锁更高效。
 type notificationState struct {
-	mu                  sync.Mutex // 互斥锁，保护该客户端状态
-	pendingOfflineSince time.Time  // 客户端离线的时间。为零值表示客户端在线或已发送离线通知。
-	isFirstConnection   bool       // 标记是否为首次上线连接。
-	isConnExist         bool       // 标记是否存在连接
-	connectionID        int64      // 连接ID，用于区分不同的连接会话，防止竞态条件
+	mu                    sync.Mutex // 互斥锁，保护该客户端状态
+	pendingOfflineSince   time.Time  // 客户端离线的时间。为零值表示客户端在线或已发送离线通知。
+	offlineNotificationAt time.Time  // 已发出离线通知的断线时间，用于计算恢复耗时。
+	isFirstConnection     bool       // 标记是否为首次上线连接。
+	isConnExist           bool       // 标记是否存在连接
+	connectionID          int64      // 连接ID，用于区分不同的连接会话，防止竞态条件
 }
 
 // clientStates 使用 sync.Map 实现对客户端状态的并发访问。
@@ -103,21 +104,26 @@ func OfflineNotification(clientID string, endedConnectionID int64) {
 		// 即将发送通知，重置待通知状态。
 		// 需要多一个boolean 是因为pendingOfflineSince在offline睡眠后才修改，可能导致online判断不对
 		state.pendingOfflineSince = time.Time{}
+		state.offlineNotificationAt = startTime
 		state.isConnExist = false
 
 		// Send notification
-		message := fmt.Sprintf("🔴%s is offline", client.Name)
-		go func(msg string) {
+		go func() {
 			if err := messageSender.SendEvent(models.EventMessage{
 				Event:   messageevent.Offline,
 				Clients: []models.Client{client},
-				Time:    time.Now(),
-				//Message: msg,
-				Emoji: "🔴",
+				Time:    startTime,
+				Emoji:   "🔴",
+				Details: []models.EventMessageField{
+					{Label: "当前状态", Value: "离线（Agent 连接已中断）"},
+					{Label: "离线时长", Value: "已超过 " + formatDuration(gracePeriod)},
+					{Label: "检测宽限", Value: formatDuration(gracePeriod)},
+				},
+				Message: "宽限期结束后仍未恢复连接，请检查服务器电源、网络以及 Komari Agent 进程。",
 			}); err != nil {
 				log.Println("Failed to send offline notification:", err)
 			}
-		}(message)
+		}()
 
 		// 更新数据库中的最后通知时间
 		db := dbcore.GetDBInstance()
@@ -175,16 +181,46 @@ func OnlineNotification(clientID string, connectionID int64) {
 	}
 
 	// 规则4：客户端离线足够久已通知（或未待离线），现在重新上线，发送上线通知。
-	message := fmt.Sprintf("🟢%s is online", client.Name)
-	go func(msg string) {
+	offlineDuration := time.Duration(0)
+	if !state.offlineNotificationAt.IsZero() {
+		offlineDuration = time.Since(state.offlineNotificationAt)
+		state.offlineNotificationAt = time.Time{}
+	}
+	go func() {
+		details := []models.EventMessageField{
+			{Label: "当前状态", Value: "在线（Agent 连接已恢复）"},
+		}
+		if offlineDuration > 0 {
+			details = append(details, models.EventMessageField{Label: "离线时长", Value: formatDuration(offlineDuration)})
+		}
 		if err := messageSender.SendEvent(models.EventMessage{
 			Event:   messageevent.Online,
 			Clients: []models.Client{client},
 			Time:    time.Now(),
-			//Message: msg,
-			Emoji: "🟢",
+			Emoji:   "🟢",
+			Details: details,
+			Message: "服务器已重新连接，监控数据恢复上报。",
 		}); err != nil {
 			log.Println("Failed to send online notification:", err)
 		}
-	}(message)
+	}()
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration < time.Minute {
+		seconds := int(duration.Round(time.Second).Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		return fmt.Sprintf("%d 秒", seconds)
+	}
+	if duration < time.Hour {
+		return fmt.Sprintf("%d 分钟", int(duration.Round(time.Minute).Minutes()))
+	}
+	hours := int(duration / time.Hour)
+	minutes := int(duration.Round(time.Minute)/time.Minute) % 60
+	if minutes == 0 {
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	return fmt.Sprintf("%d 小时 %d 分钟", hours, minutes)
 }

@@ -45,8 +45,9 @@ func CheckExpireScheduledWork() {
 			notificationLeadDays := int(cfg[config.ExpireNotificationLeadDaysKey].(float64)) // Json unmarshal 会将数字解析为 float64
 
 			type clientToExpireInfo struct {
-				Name     string
-				DaysLeft int
+				Client    models.Client
+				DaysLeft  int
+				ExpiresAt time.Time
 			}
 
 			var clientLeadToExpire []clientToExpireInfo
@@ -65,22 +66,34 @@ func CheckExpireScheduledWork() {
 					daysLeft := int(math.Ceil(remainingDuration.Hours() / 24))
 
 					clientLeadToExpire = append(clientLeadToExpire, clientToExpireInfo{
-						Name:     client.Name,
-						DaysLeft: daysLeft,
+						Client:    client,
+						DaysLeft:  daysLeft,
+						ExpiresAt: clientExpireTime,
 					})
 				}
 			}
 
 			if len(clientLeadToExpire) > 0 {
 				message := ""
+				expiringClients := make([]models.Client, 0, len(clientLeadToExpire))
 				for _, clientInfo := range clientLeadToExpire {
-					message += fmt.Sprintf("• %s (%dd)\n", clientInfo.Name, clientInfo.DaysLeft)
+					expiringClients = append(expiringClients, clientInfo.Client)
+					message += fmt.Sprintf("• %s：%s 到期（剩余 %d 天）\n",
+						clientInfo.Client.Name,
+						clientInfo.ExpiresAt.Format("2006-01-02"),
+						clientInfo.DaysLeft,
+					)
 				}
 				messageSender.SendEvent(models.EventMessage{
 					Event:   messageevent.Expire,
+					Clients: expiringClients,
 					Time:    time.Now(),
 					Message: message,
 					Emoji:   "⏳",
+					Details: []models.EventMessageField{
+						{Label: "到期数量", Value: fmt.Sprintf("%d 台服务器", len(expiringClients))},
+						{Label: "提醒范围", Value: fmt.Sprintf("未来 %d 天内", notificationLeadDays)},
+					},
 				})
 			}
 		}

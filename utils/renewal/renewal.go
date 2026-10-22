@@ -52,6 +52,7 @@ func CheckAndAutoRenewal(client models.Client) {
 			// 根据账单周期计算新的过期时间
 			var newExpireTime time.Time
 			billingCycle := client.BillingCycle
+			billingCycleLabel := fmt.Sprintf("%d 天", billingCycle)
 
 			// 如果服务器的过期时间太早了，那么直接设置为从当前时间算的下一个到期时间
 			baseTime := clientExpireTime
@@ -62,24 +63,31 @@ func CheckAndAutoRenewal(client models.Client) {
 			if billingCycle >= 27 && billingCycle <= 32 {
 				// 月度计费 - 加1个月
 				newExpireTime = baseTime.AddDate(0, 1, 0)
+				billingCycleLabel = "1 个月"
 			} else if billingCycle >= 87 && billingCycle <= 95 {
 				// 季度计费 - 加3个月
 				newExpireTime = baseTime.AddDate(0, 3, 0)
+				billingCycleLabel = "3 个月"
 			} else if billingCycle >= 175 && billingCycle <= 185 {
 				// 半年计费 - 加6个月
 				newExpireTime = baseTime.AddDate(0, 6, 0)
+				billingCycleLabel = "6 个月"
 			} else if billingCycle >= 360 && billingCycle <= 370 {
 				// 年度计费 - 加1年
 				newExpireTime = baseTime.AddDate(1, 0, 0)
+				billingCycleLabel = "1 年"
 			} else if billingCycle >= 720 && billingCycle <= 750 {
 				// 两年计费 - 加2年
 				newExpireTime = baseTime.AddDate(2, 0, 0)
+				billingCycleLabel = "2 年"
 			} else if billingCycle >= 1080 && billingCycle <= 1150 {
 				// 三年计费 - 加3年
 				newExpireTime = baseTime.AddDate(3, 0, 0)
+				billingCycleLabel = "3 年"
 			} else if billingCycle >= 1800 && billingCycle <= 1850 {
 				// 五年计费 - 加5年
 				newExpireTime = baseTime.AddDate(5, 0, 0)
+				billingCycleLabel = "5 年"
 			} else {
 				// 其他情况，直接加上账单周期天数
 				newExpireTime = baseTime.AddDate(0, 0, billingCycle)
@@ -105,12 +113,26 @@ func CheckAndAutoRenewal(client models.Client) {
 			auditlog.EventLog("renewal", fmt.Sprintf("Auto-renewed client: %s until %s",
 				client.Name, newExpireTime.Format("2006-01-02")))
 
+			details := []models.EventMessageField{
+				{Label: "原到期日", Value: clientExpireTime.Format("2006-01-02")},
+				{Label: "新到期日", Value: newExpireTime.Format("2006-01-02")},
+				{Label: "续费周期", Value: billingCycleLabel},
+			}
+			if client.Price > 0 {
+				currency := client.Currency
+				if currency == "" {
+					currency = "$"
+				}
+				details = append(details, models.EventMessageField{Label: "续费金额", Value: fmt.Sprintf("%s%.2f", currency, client.Price)})
+			}
+
 			messageSender.SendEvent(models.EventMessage{
 				Event:   messageevent.Renew,
 				Clients: []models.Client{client},
 				Time:    time.Now(),
 				Emoji:   "🔄",
-				Message: fmt.Sprintf("• %s until %s\n", client.Name, newExpireTime.Format("2006-01-02")),
+				Details: details,
+				Message: "自动续费已完成，服务器到期时间已更新。",
 			})
 		}
 	}

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/komari-monitor/komari/database/auditlog"
@@ -12,18 +13,26 @@ import (
 
 func AddClient(c *gin.Context) {
 	var req struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Group string `json:"group"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
-		uuid, token, err := clients.CreateClient()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "success", "uuid": uuid, "token": token})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Preserve the legacy behavior: an empty or invalid body creates an
+		// automatically named, ungrouped client.
+		req.Name = ""
+		req.Group = ""
+	}
+	req.Group = strings.TrimSpace(req.Group)
+	groupExists, err := clients.ServerGroupExists(req.Group)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
 	}
-	uuid, token, err := clients.CreateClientWithName(req.Name)
+	if !groupExists {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Server group does not exist"})
+		return
+	}
+	uuid, token, err := clients.CreateClientWithNameAndGroup(req.Name, req.Group)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
@@ -43,6 +52,24 @@ func EditClient(c *gin.Context) {
 	if uuid == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invalid or missing UUID"})
 		return
+	}
+	if rawGroup, exists := req["group"]; exists {
+		group, ok := rawGroup.(string)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invalid group"})
+			return
+		}
+		group = strings.TrimSpace(group)
+		exists, err := clients.ServerGroupExists(group)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Server group does not exist"})
+			return
+		}
+		req["group"] = group
 	}
 	req["uuid"] = uuid
 	err := clients.SaveClient(req)

@@ -133,13 +133,20 @@ func Static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc)) {
 	// 核心逻辑：渲染 Index.html
 	serveIndex := func(c *gin.Context) {
 		reqPath := c.Request.URL.Path
+		isLegacyAdminPath := reqPath == "/admin" || strings.HasPrefix(reqPath, "/admin/")
+		if isLegacyAdminPath {
+			c.Status(http.StatusNotFound)
+			return
+		}
+
 		cfg := getConfig()
 
 		currentTheme := cfg[config.ThemeKey].(string)
 		shouldReplace := true
 
 		// 特殊页面：强制使用 default 主题，且不进行内容替换
-		if strings.HasPrefix(reqPath, "/admin") || strings.HasPrefix(reqPath, "/terminal") {
+		isAdminPath := reqPath == "/kidding" || strings.HasPrefix(reqPath, "/kidding/")
+		if isAdminPath || strings.HasPrefix(reqPath, "/terminal") {
 			currentTheme = DefaultTheme
 			shouldReplace = false
 		}

@@ -415,7 +415,13 @@ func GetDBInstance() *gorm.DB {
 		switch flags.DatabaseType {
 		case "sqlite", "":
 			// SQLite 连接
-			instance, err = gorm.Open(sqlite.Open(flags.DatabaseFile), logConfig)
+			sqliteDSN := flags.DatabaseFile
+			separator := "?"
+			if strings.Contains(sqliteDSN, "?") {
+				separator = "&"
+			}
+			sqliteDSN += separator + "_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL"
+			instance, err = gorm.Open(sqlite.Open(sqliteDSN), logConfig)
 			if err != nil {
 				log.Fatalf("Failed to connect to SQLite3 database: %v", err)
 			}
@@ -450,6 +456,8 @@ func GetDBInstance() *gorm.DB {
 		err = instance.AutoMigrate(
 			&models.User{},
 			&models.Client{},
+			&models.ServerGroup{},
+			&models.Subscription{},
 			&models.Record{},
 			&models.GPURecord{},
 			// &models.Config{},
@@ -484,14 +492,6 @@ func GetDBInstance() *gorm.DB {
 		if err != nil {
 			log.Printf("Failed to create Session table, it may already exist: %v", err)
 		}
-		err = instance.AutoMigrate(
-			&models.Task{},
-			&models.TaskResult{},
-		)
-		if err != nil {
-			log.Printf("Failed to create Task and TaskResult table, it may already exist: %v", err)
-		}
-
 		// Manually create composite indexes
 		if flags.DatabaseType == "sqlite" || flags.DatabaseType == "" {
 			instance.Exec("CREATE INDEX IF NOT EXISTS idx_record_client_time ON records(client, time)")

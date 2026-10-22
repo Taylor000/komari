@@ -2,6 +2,7 @@ package test
 
 import (
 	"net"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/komari-monitor/komari/api"
@@ -14,7 +15,13 @@ import (
 func TestSendMessage(c *gin.Context) {
 	err := messageSender.SendEvent(models.EventMessage{
 		Event:   "Test",
-		Message: "This is a test message from Komari.",
+		Time:    time.Now(),
+		Emoji:   "🧪",
+		Message: "如果你能看到这条消息，说明 Telegram 通知渠道工作正常。",
+		Details: []models.EventMessageField{
+			{Label: "发送状态", Value: "连接成功"},
+			{Label: "消息格式", Value: "Telegram HTML 富文本"},
+		},
 	})
 	if err != nil {
 		api.RespondError(c, 500, "Failed to send message: "+err.Error())
