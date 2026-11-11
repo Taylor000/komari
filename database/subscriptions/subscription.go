@@ -1,6 +1,7 @@
 package subscriptions
 
 import (
+	"errors"
 	"time"
 
 	"github.com/komari-monitor/komari/database/dbcore"
@@ -64,3 +65,36 @@ func Delete(id uint) error {
 	}
 	return nil
 }
+
+// Reorder sets each subscription's weight to its position in ids. ids must
+// list every subscription exactly once, so a stale page cannot leave gaps or
+// duplicate weights behind.
+func Reorder(ids []uint) error {
+	db := dbcore.GetDBInstance()
+	return db.Transaction(func(tx *gorm.DB) error {
+		var total int64
+		if err := tx.Model(&models.Subscription{}).Count(&total).Error; err != nil {
+			return err
+		}
+		seen := make(map[uint]struct{}, len(ids))
+		for _, id := range ids {
+			seen[id] = struct{}{}
+		}
+		if int64(len(ids)) != total || len(seen) != len(ids) {
+			return ErrOrderMismatch
+		}
+		for weight, id := range ids {
+			result := tx.Model(&models.Subscription{}).Where("id = ?", id).Update("weight", weight)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return ErrOrderMismatch
+			}
+		}
+		return nil
+	})
+}
+
+// ErrOrderMismatch means the submitted order does not match the stored list.
+var ErrOrderMismatch = errors.New("subscription order does not match the current list")

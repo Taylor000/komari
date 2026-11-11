@@ -3,10 +3,12 @@ package admin
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/komari-monitor/komari/database/auditlog"
 	"github.com/komari-monitor/komari/database/clients"
+	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/database/records"
 	"github.com/komari-monitor/komari/ws"
 )
@@ -70,6 +72,30 @@ func EditClient(c *gin.Context) {
 			return
 		}
 		req["group"] = group
+	}
+	if rawPurchasedAt, exists := req["purchased_at"]; exists {
+		// Normalize to LocalTime so the stored text is always in the app
+		// timezone; an empty value (or null) clears the purchase time.
+		value, ok := rawPurchasedAt.(string)
+		if rawPurchasedAt != nil && !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invalid purchased_at"})
+			return
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			req["purchased_at"] = nil
+		} else {
+			purchasedAt, err := time.Parse(time.RFC3339, value)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "purchased_at must be an RFC3339 time"})
+				return
+			}
+			if purchasedAt.After(time.Now().Add(time.Minute)) {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "purchased_at cannot be in the future"})
+				return
+			}
+			req["purchased_at"] = models.FromTime(purchasedAt)
+		}
 	}
 	req["uuid"] = uuid
 	err := clients.SaveClient(req)

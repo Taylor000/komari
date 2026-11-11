@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,6 +24,7 @@ type subscriptionRequest struct {
 	Currency     string  `json:"currency"`
 	BillingCycle int     `json:"billing_cycle"`
 	ExpiresAt    string  `json:"expires_at"`
+	StartedAt    string  `json:"started_at"`
 	AutoRenewal  bool    `json:"auto_renewal"`
 	Visible      *bool   `json:"visible"`
 	ShowPrice    *bool   `json:"show_price"`
@@ -55,6 +57,18 @@ func normalizeSubscription(req subscriptionRequest) (models.Subscription, error)
 	if err != nil {
 		return models.Subscription{}, &subscriptionInputError{"请输入有效的到期日期"}
 	}
+	// started_at is optional: empty clears it, otherwise a date not in the future.
+	var startedAt models.LocalTime
+	if value := strings.TrimSpace(req.StartedAt); value != "" {
+		parsed, err := time.ParseInLocation("2006-01-02", value, models.GetAppLocation())
+		if err != nil {
+			return models.Subscription{}, &subscriptionInputError{"请输入有效的开通日期"}
+		}
+		if parsed.After(time.Now()) {
+			return models.Subscription{}, &subscriptionInputError{"开通日期不能晚于今天"}
+		}
+		startedAt = models.FromTime(parsed)
+	}
 	if req.URL != "" {
 		parsed, err := url.ParseRequestURI(req.URL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -79,6 +93,7 @@ func normalizeSubscription(req subscriptionRequest) (models.Subscription, error)
 		Currency:     req.Currency,
 		BillingCycle: req.BillingCycle,
 		ExpiresAt:    models.FromTime(expiresAt),
+		StartedAt:    startedAt,
 		AutoRenewal:  req.AutoRenewal,
 		Visible:      visible,
 		ShowPrice:    showPrice,
@@ -137,9 +152,9 @@ func EditSubscription(c *gin.Context) {
 	item, err := subscriptions.Update(id, map[string]interface{}{
 		"name": input.Name, "plan": input.Plan, "price": input.Price,
 		"currency": input.Currency, "billing_cycle": input.BillingCycle,
-		"expires_at": input.ExpiresAt, "auto_renewal": input.AutoRenewal,
-		"visible": input.Visible, "show_price": input.ShowPrice,
-		"url": input.URL, "remark": input.Remark,
+		"expires_at": input.ExpiresAt, "started_at": input.StartedAt,
+		"auto_renewal": input.AutoRenewal, "visible": input.Visible,
+		"show_price": input.ShowPrice, "url": input.URL, "remark": input.Remark,
 		"updated_at": models.Now(),
 	})
 	if err != nil {
@@ -168,6 +183,27 @@ func RemoveSubscription(c *gin.Context) {
 		return
 	}
 	logSubscriptionAction(c, "delete subscription:"+strconv.FormatUint(uint64(id), 10), "warn")
+	api.RespondSuccess(c, nil)
+}
+
+// OrderSubscriptions saves a manual display order: {"ids": [3, 1, 2]}.
+func OrderSubscriptions(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.RespondError(c, http.StatusBadRequest, "请求内容无效："+err.Error())
+		return
+	}
+	if err := subscriptions.Reorder(req.IDs); err != nil {
+		if errors.Is(err, subscriptions.ErrOrderMismatch) {
+			api.RespondError(c, http.StatusConflict, "订阅列表已变化，请刷新后重试")
+		} else {
+			api.RespondError(c, http.StatusInternalServerError, "保存排序失败："+err.Error())
+		}
+		return
+	}
+	logSubscriptionAction(c, "order subscriptions", "info")
 	api.RespondSuccess(c, nil)
 }
 

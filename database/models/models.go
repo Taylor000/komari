@@ -33,6 +33,7 @@ type Client struct {
 	AutoRenewal      bool      `json:"auto_renewal" gorm:"default:false"` // 是否自动续费
 	Currency         string    `json:"currency" gorm:"type:varchar(20);default:'$'"`
 	ExpiredAt        LocalTime `json:"expired_at" gorm:"type:timestamp"`
+	PurchasedAt      LocalTime `json:"purchased_at" gorm:"type:timestamp"` // 购买时间，用于计算存续时长
 	Group            string    `json:"group" gorm:"type:varchar(100)"`
 	GroupOrder       *int      `json:"group_order,omitempty" gorm:"-"`
 	Tags             string    `json:"tags" gorm:"type:text"` // split by ';'

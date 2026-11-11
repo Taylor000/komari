@@ -310,6 +310,7 @@ func RunServer() {
 		{
 			subscriptionGroup.GET("", admin.ListSubscriptions)
 			subscriptionGroup.POST("", admin.AddSubscription)
+			subscriptionGroup.POST("/order", admin.OrderSubscriptions)
 			subscriptionGroup.POST("/:id/edit", admin.EditSubscription)
 			subscriptionGroup.POST("/:id/remove", admin.RemoveSubscription)
 		}

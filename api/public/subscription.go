@@ -25,6 +25,7 @@ func GetSubscriptions(c *gin.Context) {
 		Currency     string           `json:"currency"`
 		BillingCycle int              `json:"billing_cycle"`
 		ExpiresAt    models.LocalTime `json:"expires_at"`
+		StartedAt    models.LocalTime `json:"started_at"`
 		AutoRenewal  bool             `json:"auto_renewal"`
 		ShowPrice    bool             `json:"show_price"`
 		URL          string           `json:"url"`
@@ -39,7 +40,7 @@ func GetSubscriptions(c *gin.Context) {
 		result = append(result, publicSubscription{
 			ID: item.ID, Name: item.Name, Plan: item.Plan, Price: price,
 			Currency: item.Currency, BillingCycle: item.BillingCycle,
-			ExpiresAt: item.ExpiresAt, AutoRenewal: item.AutoRenewal,
+			ExpiresAt: item.ExpiresAt, StartedAt: item.StartedAt, AutoRenewal: item.AutoRenewal,
 			ShowPrice: item.ShowPrice, URL: item.URL, Weight: item.Weight,
 		})
 	}

@@ -9,6 +9,7 @@ type Subscription struct {
 	Currency     string    `json:"currency" gorm:"type:varchar(8);not null"`
 	BillingCycle int       `json:"billing_cycle" gorm:"type:int;not null"`
 	ExpiresAt    LocalTime `json:"expires_at" gorm:"type:timestamp;index"`
+	StartedAt    LocalTime `json:"started_at" gorm:"type:timestamp"` // 开通时间，用于计算存续时长；为空表示未设置
 	AutoRenewal  bool      `json:"auto_renewal" gorm:"default:false"`
 	Visible      bool      `json:"visible" gorm:"index"`
 	ShowPrice    bool      `json:"show_price"`
